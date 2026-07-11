@@ -1,0 +1,51 @@
+# Entorno virtual
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Variables sensibles
+.env
+
+# Certificados / claves ARCA
+certificado.crt
+privada.key
+*.crt
+*.key
+*.pem
+*.csr
+pedido.csr
+
+# Base de datos local
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Ventas reales / CSV privados
+ventas/
+*.csv
+
+# Backups / comprimidos
+*.rar
+*.zip
+*.7z
+
+# Scripts sensibles o de prueba
+generar_llaves.py
+test_arca.py
+
+# Archivos viejos / duplicados
+templates/
+
+# Sistema
+.DS_Store
+Thumbs.db
