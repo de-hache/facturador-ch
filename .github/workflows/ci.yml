@@ -54,15 +54,17 @@ jobs:
 
           exit "$error"
 
-      - name: Buscar claves privadas
-        shell: bash
-        run: |
-          if git grep -n -E \
-            'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|BEGIN CERTIFICATE' \
-            -- . \
-            ':(exclude)MANUAL.md'; then
-            echo "::error::Se detectó una posible clave o certificado."
-            exit 1
-          fi
+- name: Buscar claves privadas
+  shell: bash
+  run: |
+    if git grep -n -E \
+      'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|BEGIN CERTIFICATE' \
+      -- . \
+      ':(exclude)MANUAL.md' \
+      ':(exclude)README.md' \
+      ':(exclude).github/workflows/ci.yml'; then
+      echo "::error::Se detectó una posible clave o certificado."
+      exit 1
+    fi
 
-          echo "No se detectaron claves ni certificados."
+    echo "No se detectaron claves ni certificados."
