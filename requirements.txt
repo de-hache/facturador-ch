@@ -3,5 +3,5 @@ uvicorn
 python-multipart
 pandas
 requests
-afip
+afip-py==1.2.0
 python-dotenv

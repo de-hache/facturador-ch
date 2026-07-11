@@ -1,51 +1,107 @@
-# Entorno virtual
+# =====================================================
+# ENTORNOS VIRTUALES
+# =====================================================
+
 venv/
 .venv/
 
-# Python
+# =====================================================
+# PYTHON
+# =====================================================
+
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Variables sensibles
+# =====================================================
+# VARIABLES DE ENTORNO
+# =====================================================
+
 .env
+.env.local
+.env.production
+.env.development
 
-# Certificados / claves ARCA
+# El ejemplo sí se versiona
+!.env.example
+
+# =====================================================
+# CERTIFICADOS Y CREDENCIALES
+# =====================================================
+
+certificados/
 certificado.crt
 privada.key
 *.crt
 *.key
 *.pem
 *.csr
-pedido.csr
+*.pfx
+*.p12
 
-# Base de datos local
+# =====================================================
+# BASES DE DATOS
+# =====================================================
+
 data/
 *.db
 *.sqlite
 *.sqlite3
 
-# Logs
+# =====================================================
+# LOGS
+# =====================================================
+
 logs/
 *.log
 
-# Ventas reales / CSV privados
+# =====================================================
+# VENTAS Y DATOS PERSONALES
+# =====================================================
+
 ventas/
 *.csv
+*.xlsx
+*.xls
 
-# Backups / comprimidos
+# =====================================================
+# ARCHIVOS COMPRIMIDOS Y BACKUPS
+# =====================================================
+
 *.rar
 *.zip
 *.7z
+*.bak
+*.backup
 
-# Scripts sensibles o de prueba
+# =====================================================
+# SCRIPTS LOCALES O SENSIBLES
+# =====================================================
+
 generar_llaves.py
 test_arca.py
 
-# Archivos viejos / duplicados
+# Archivo antiguo de la raíz
+/main.py
+
+# Plantillas antiguas si no se utilizan
 templates/
 
-# Sistema
-.DS_Store
+# =====================================================
+# EDITORES
+# =====================================================
+
+.vscode/
+.idea/
+
+# =====================================================
+# WINDOWS / SISTEMA
+# =====================================================
+
 Thumbs.db
+Desktop.ini
+.DS_Store
