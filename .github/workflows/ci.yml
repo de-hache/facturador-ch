@@ -1,0 +1,68 @@
+name: CI - Facturador
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+      - "fix/**"
+
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  quality:
+    name: Compilación y seguridad
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Actualizar pip
+        run: python -m pip install --upgrade pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Verificar sintaxis de Python
+        run: python -m compileall app procesar_lote.py
+
+      - name: Verificar archivos sensibles
+        shell: bash
+        run: |
+          error=0
+
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::Se encontró un archivo .env versionado."
+            error=1
+          fi
+
+          if git ls-files | grep -E '\.(key|pem|pfx|p12|csr|crt|db|sqlite|sqlite3|csv)$'; then
+            echo "::error::Se encontraron archivos sensibles o privados."
+            error=1
+          fi
+
+          exit "$error"
+
+      - name: Buscar claves privadas
+        shell: bash
+        run: |
+          if git grep -n -E \
+            'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|BEGIN CERTIFICATE' \
+            -- . \
+            ':(exclude)MANUAL.md'; then
+            echo "::error::Se detectó una posible clave o certificado."
+            exit 1
+          fi
+
+          echo "No se detectaron claves ni certificados."
