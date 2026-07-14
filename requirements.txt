@@ -5,3 +5,4 @@ pandas
 requests
 afip-py==1.2.0
 python-dotenv
+pytest==8.3.5
