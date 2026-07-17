@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from app.config import DATABASE_PATH
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -14,17 +15,12 @@ def fecha_argentina():
 
 
 def obtener_ruta_db():
-    """
-    Devuelve la ruta de SQLite configurada.
-
-    Uso normal:
-        data/facturador.db
-
-    Durante las pruebas:
-        pytest reemplaza DATABASE_PATH por una base temporal.
-    """
-    ruta = os.getenv("DATABASE_PATH", "data/facturador.db")
-    return Path(ruta)
+    return Path(
+        os.getenv(
+            "DATABASE_PATH",
+            str(DATABASE_PATH)
+        )
+    )
 
 
 def conectar():
