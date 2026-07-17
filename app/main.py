@@ -1,106 +1,224 @@
 import datetime
+import os
 import subprocess
 import sys
-import os
 import time
-from pathlib import Path
 from html import escape
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Form
+from afip import Afip
+from fastapi import FastAPI, Form, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from afip import Afip
 
+from app.config import (
+    AFIP_ACCESS_TOKEN,
+    AFIP_CERT_PATH,
+    AFIP_KEY_PATH,
+    AFIP_PRODUCTION,
+    APP_NAME,
+    ARCA_ESPERAS,
+    ARCA_MAX_REINTENTOS,
+    CUIT,
+    PUNTO_VENTA,
+    TIPO_COMPROBANTE,
+    ULTIMO_PROCESO_PATH,
+    VENTAS_PATH,
+    validar_configuracion,
+)
 from app.database import (
-    inicializar,
-    registrar_evento,
-    ultimos_eventos,
-    guardar_factura,
-    contar_facturas,
     contar_errores,
+    contar_facturas,
+    contar_pendientes,
+    existe_orden_facturada,
+    guardar_factura,
+    inicializar,
+    marcar_error_resuelto,
+    obtener_error_facturacion,
+    registrar_error_facturacion,
+    registrar_evento,
     ultima_factura,
     ultimas_facturas,
-    existe_orden_facturada,
-    registrar_error_facturacion,
     ultimos_errores_facturacion,
-    contar_pendientes,
-    obtener_error_facturacion,
-    marcar_error_resuelto
+    ultimos_eventos,
 )
-
+from app.errors import (
+    manejar_error_404,
+    manejar_error_general,
+    manejar_error_validacion,
+)
 from app.logger import logger
 
 
-app = FastAPI(title="Chuli Facturador")
+# =====================================================
+# APLICACIÓN FASTAPI
+# =====================================================
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app = FastAPI(title=APP_NAME)
+
+
+app.add_exception_handler(
+    404,
+    manejar_error_404,
+)
+
+app.add_exception_handler(
+    RequestValidationError,
+    manejar_error_validacion,
+)
+
+app.add_exception_handler(
+    Exception,
+    manejar_error_general,
+)
+
+
+app.mount(
+    "/static",
+    StaticFiles(directory="static"),
+    name="static",
+)
+
+
+# =====================================================
+# INICIALIZACIÓN
+# =====================================================
 
 inicializar()
 
 logger.info("Servidor iniciado")
-registrar_evento("INFO", "Servidor iniciado")
+registrar_evento(
+    "INFO",
+    "Servidor iniciado",
+)
 
 
 # =====================================================
-# CARPETAS / ARCHIVOS
+# CARPETAS Y ARCHIVOS
 # =====================================================
 
-LOG_PROCESO = Path("logs/ultimo_proceso.txt")
-LOG_PROCESO.parent.mkdir(exist_ok=True)
+LOG_PROCESO = ULTIMO_PROCESO_PATH
 
-CARPETA_VENTAS = Path("ventas")
-CARPETA_VENTAS.mkdir(exist_ok=True)
+LOG_PROCESO.parent.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
-FAVICON = "https://d22fxaf9t8d39k.cloudfront.net/1dfabd14f4725ee6bceb4fbfccfd8acfc2995aef483ad49a1407d95fc2d86d29140661.png"
+
+CARPETA_VENTAS = VENTAS_PATH
+
+CARPETA_VENTAS.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 
-def head_html(titulo="Chuli Facturador"):
+FAVICON = (
+    "https://d22fxaf9t8d39k.cloudfront.net/"
+    "1dfabd14f4725ee6bceb4fbfccfd8acfc2995aef483ad49a1407d95fc2d86d29140661.png"
+)
+
+
+# =====================================================
+# FUNCIONES GENERALES
+# =====================================================
+
+def head_html(
+    titulo: str = APP_NAME,
+) -> str:
     return f"""
     <head>
         <meta charset="UTF-8">
-        <title>{titulo}</title>
-        <link rel="shortcut icon" href="{FAVICON}" />
-        <link rel="stylesheet" href="/static/css/style.css">
+
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+
+        <title>{escape(titulo)}</title>
+
+        <link
+            rel="shortcut icon"
+            href="{FAVICON}"
+        >
+
+        <link
+            rel="stylesheet"
+            href="/static/css/style.css"
+        >
     </head>
     """
 
 
-def leer_ultimo_proceso():
+def leer_ultimo_proceso() -> str:
     if LOG_PROCESO.exists():
-        return LOG_PROCESO.read_text(encoding="utf-8", errors="replace")
+        return LOG_PROCESO.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+
     return "Todavía no se ejecutó ningún proceso."
 
 
-def guardar_ultimo_proceso(texto):
-    LOG_PROCESO.write_text(texto, encoding="utf-8")
+def guardar_ultimo_proceso(
+    texto: str,
+) -> None:
+    LOG_PROCESO.write_text(
+        texto,
+        encoding="utf-8",
+    )
 
 
-def listar_csv_ventas():
+def listar_csv_ventas() -> list[str]:
     archivos = []
 
     for archivo in CARPETA_VENTAS.glob("*.csv"):
-        archivos.append(str(archivo).replace("\\", "/"))
+        ruta_normalizada = str(
+            archivo
+        ).replace(
+            "\\",
+            "/",
+        )
+
+        archivos.append(
+            ruta_normalizada
+        )
 
     return sorted(archivos)
 
 
 # =====================================================
-# CONEXIÓN CON ARCA / AFIP SDK
+# CONFIGURACIÓN ARCA / AFIP
 # =====================================================
 
-with open("certificado.crt", "r", encoding="utf-8") as archivo_cert:
-    contenido_certificado = archivo_cert.read()
+validar_configuracion()
 
-with open("privada.key", "r", encoding="utf-8") as archivo_key:
-    contenido_llave = archivo_key.read()
+
+with open(
+    AFIP_CERT_PATH,
+    "r",
+    encoding="utf-8",
+) as archivo_certificado:
+    contenido_certificado = (
+        archivo_certificado.read()
+    )
+
+
+with open(
+    AFIP_KEY_PATH,
+    "r",
+    encoding="utf-8",
+) as archivo_clave:
+    contenido_llave = archivo_clave.read()
 
 
 afip = Afip({
-    "CUIT": 20270875409,
+    "CUIT": int(CUIT),
     "cert": contenido_certificado,
     "key": contenido_llave,
-    "production": False,
-    "access_token": "pnGqioNL9IoYHRcD6qmGVbyLWfscrhWA877v3XYAWgva4yzcVjdgVRsSonTvitOZ"
+    "production": AFIP_PRODUCTION,
+    "access_token": AFIP_ACCESS_TOKEN,
 })
 
 
@@ -108,7 +226,9 @@ afip = Afip({
 # REINTENTOS ARCA
 # =====================================================
 
-def es_error_temporal(error):
+def es_error_temporal(
+    error: Exception,
+) -> bool:
     mensaje = str(error).lower()
 
     palabras_temporales = [
@@ -124,18 +244,30 @@ def es_error_temporal(error):
         "504",
         "connection",
         "servidor",
-        "no disponible"
+        "no disponible",
     ]
 
-    for palabra in palabras_temporales:
-        if palabra in mensaje:
-            return True
+    return any(
+        palabra in mensaje
+        for palabra in palabras_temporales
+    )
 
-    return False
 
+def crear_voucher_con_reintentos(
+    data_afip: dict,
+    id_orden: int,
+    numero_factura: int,
+    intentos: int | None = None,
+):
+    if intentos is None:
+        intentos = ARCA_MAX_REINTENTOS
 
-def crear_voucher_con_reintentos(data_afip, id_orden, numero_factura, intentos=4):
-    esperas = [5, 10, 20, 40]
+    if intentos < 1:
+        raise RuntimeError(
+            "ARCA_MAX_REINTENTOS debe ser "
+            "igual o mayor a 1."
+        )
+
     ultimo_error = None
 
     for intento in range(intentos):
@@ -144,27 +276,75 @@ def crear_voucher_con_reintentos(data_afip, id_orden, numero_factura, intentos=4
         try:
             registrar_evento(
                 "INFO",
-                f"Intento {numero_intento}/{intentos} - Solicitando CAE para orden {id_orden}, factura {numero_factura}"
+                (
+                    f"Intento {numero_intento}/{intentos} - "
+                    f"Solicitando CAE para orden {id_orden}, "
+                    f"factura {numero_factura}"
+                ),
             )
 
-            resultado = afip.ElectronicBilling.createVoucher(data_afip)
+            resultado = (
+                afip
+                .ElectronicBilling
+                .createVoucher(
+                    data_afip
+                )
+            )
 
             registrar_evento(
                 "INFO",
-                f"CAE obtenido en intento {numero_intento} - Orden {id_orden}"
+                (
+                    f"CAE obtenido en intento "
+                    f"{numero_intento} - "
+                    f"Orden {id_orden}"
+                ),
             )
 
             return resultado
 
-        except Exception as e:
-            ultimo_error = e
+        except Exception as error:
+            ultimo_error = error
 
-            if es_error_temporal(e) and intento < intentos - 1:
-                segundos = esperas[intento]
+            quedan_intentos = (
+                intento < intentos - 1
+            )
+
+            if (
+                es_error_temporal(error)
+                and quedan_intentos
+            ):
+                indice_espera = min(
+                    intento,
+                    len(ARCA_ESPERAS) - 1,
+                )
+
+                segundos = (
+                    ARCA_ESPERAS[
+                        indice_espera
+                    ]
+                )
 
                 registrar_evento(
                     "ERROR",
-                    f"ARCA congestionado/temporal en orden {id_orden}. Reintentando en {segundos} segundos. Error: {str(e)}"
+                    (
+                        "Error temporal de ARCA "
+                        f"en orden {id_orden}. "
+                        f"Reintentando en {segundos} "
+                        "segundos. "
+                        f"Detalle: {error}"
+                    ),
+                )
+
+                logger.warning(
+                    (
+                        "Error temporal de ARCA "
+                        "en orden %s. "
+                        "Reintento en %s segundos. "
+                        "Detalle: %s"
+                    ),
+                    id_orden,
+                    segundos,
+                    error,
                 )
 
                 time.sleep(segundos)
@@ -172,35 +352,71 @@ def crear_voucher_con_reintentos(data_afip, id_orden, numero_factura, intentos=4
 
             registrar_evento(
                 "ERROR",
-                f"No se pudo obtener CAE para orden {id_orden}. Error final: {str(e)}"
+                (
+                    "No se pudo obtener CAE "
+                    f"para orden {id_orden}. "
+                    f"Error final: {error}"
+                ),
             )
 
-            raise ultimo_error
+            logger.exception(
+                (
+                    "No se pudo obtener CAE "
+                    "para la orden %s"
+                ),
+                id_orden,
+            )
+
+            raise
+
+    if ultimo_error:
+        raise ultimo_error
+
+    raise RuntimeError(
+        f"No se pudo procesar la orden {id_orden}."
+    )
 
 
 # =====================================================
 # DASHBOARD
 # =====================================================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
 def dashboard():
-
     total_facturas = contar_facturas()
     total_errores = contar_errores()
     total_pendientes = contar_pendientes()
     ultima = ultima_factura()
+
     eventos = ultimos_eventos()
     facturas = ultimas_facturas()
-    salida_proceso = escape(leer_ultimo_proceso())
     archivos_csv = listar_csv_ventas()
+
+    salida_proceso = escape(
+        leer_ultimo_proceso()
+    )
+
+    modo_arca = (
+        "Producción"
+        if AFIP_PRODUCTION
+        else "Homologación"
+    )
 
     opciones_csv = ""
 
     if archivos_csv:
         for archivo in archivos_csv:
+            archivo_seguro = escape(
+                archivo,
+                quote=True,
+            )
+
             opciones_csv += f"""
-                <option value="{archivo}">
-                    {archivo}
+                <option value="{archivo_seguro}">
+                    {archivo_seguro}
                 </option>
             """
     else:
@@ -214,15 +430,19 @@ def dashboard():
     <!DOCTYPE html>
     <html lang="es">
 
-    {head_html("Chuli Facturador")}
+    {head_html(APP_NAME)}
 
     <body>
         <div class="contenedor">
 
             <div class="header">
                 <div>
-                    <h1>🧾 Chuli Facturador</h1>
-                    <p>Dashboard v0.1 - Homologación ARCA</p>
+                    <h1>🧾 {escape(APP_NAME)}</h1>
+
+                    <p>
+                        Dashboard ARCA / AFIP ·
+                        Modo: {escape(modo_arca)}
+                    </p>
                 </div>
             </div>
 
@@ -230,77 +450,120 @@ def dashboard():
 
                 <div class="card">
                     <h3>Servidor</h3>
-                    <div class="numero ok">ONLINE</div>
+
+                    <div class="numero ok">
+                        ONLINE
+                    </div>
                 </div>
 
                 <div class="card">
                     <h3>SQLite</h3>
-                    <div class="numero ok">OK</div>
+
+                    <div class="numero ok">
+                        OK
+                    </div>
                 </div>
 
                 <div class="card">
                     <h3>Facturas</h3>
-                    <div class="numero">{total_facturas}</div>
+
+                    <div class="numero">
+                        {total_facturas}
+                    </div>
                 </div>
 
                 <div class="card">
                     <h3>Errores</h3>
-                    <div class="numero error">{total_errores}</div>
+
+                    <div class="numero error">
+                        {total_errores}
+                    </div>
                 </div>
 
                 <div class="card">
                     <h3>Pendientes</h3>
-                    <div class="numero error">{total_pendientes}</div>
+
+                    <div class="numero error">
+                        {total_pendientes}
+                    </div>
                 </div>
 
             </div>
 
             <div class="card">
                 <h3>Última factura emitida</h3>
-                <div class="numero">#{ultima}</div>
+
+                <div class="numero">
+                    #{ultima}
+                </div>
 
                 <br>
 
-                <a class="boton-secundario" href="/db/facturas">
+                <a
+                    class="boton-secundario"
+                    href="/db/facturas"
+                >
                     Ver facturas SQLite
                 </a>
 
-                <a class="boton-secundario" href="/db/eventos">
+                <a
+                    class="boton-secundario"
+                    href="/db/eventos"
+                >
                     Ver eventos SQLite
                 </a>
 
-                <a class="boton-secundario" href="/db/errores">
+                <a
+                    class="boton-secundario"
+                    href="/db/errores"
+                >
                     Ver pendientes
                 </a>
 
                 <br><br>
 
-                <form action="/procesar" method="post">
+                <form
+                    action="/procesar"
+                    method="post"
+                >
+                    <label>
+                        <b>Seleccionar archivo CSV:</b>
+                    </label>
 
-                    <label><b>Seleccionar archivo CSV:</b></label>
                     <br><br>
 
-                    <select name="archivo_csv">
+                    <select
+                        name="archivo_csv"
+                        required
+                    >
                         {opciones_csv}
                     </select>
 
                     <br><br>
 
-                    <button class="boton" type="submit">
+                    <button
+                        class="boton"
+                        type="submit"
+                    >
                         ▶ Procesar lote seleccionado
                     </button>
-
                 </form>
 
                 <div class="aviso">
-                    Los archivos CSV deben estar dentro de la carpeta <b>ventas/</b>.
-                    Recomendado: <b>AAAA-MM-DD_a_AAAA-MM-DD.csv</b>
+                    Los archivos CSV deben estar dentro de
+                    <b>{escape(str(CARPETA_VENTAS))}/</b>.
+
+                    Nomenclatura recomendada:
+                    <b>AAAA-MM-DD_a_AAAA-MM-DD.csv</b>
                 </div>
             </div>
 
             <div class="card seccion">
                 <h2>Consola del último proceso</h2>
-                <div class="consola">{salida_proceso}</div>
+
+                <div class="consola">
+                    {salida_proceso}
+                </div>
             </div>
 
             <div class="card seccion">
@@ -319,20 +582,48 @@ def dashboard():
                     </tr>
     """
 
-    for f in facturas:
-        numero_factura = f[3]
+    for factura in facturas:
+        fecha = escape(
+            str(factura[0])
+        )
+
+        orden = escape(
+            str(factura[1])
+        )
+
+        cliente = escape(
+            str(factura[2])
+        )
+
+        numero_factura = factura[3]
+
+        total = escape(
+            str(factura[4])
+        )
+
+        cae = escape(
+            str(factura[5])
+        )
+
+        estado_factura = escape(
+            str(factura[6])
+        )
 
         html += f"""
                     <tr>
-                        <td>{f[0]}</td>
-                        <td>{f[1]}</td>
-                        <td>{f[2]}</td>
+                        <td>{fecha}</td>
+                        <td>{orden}</td>
+                        <td>{cliente}</td>
                         <td>{numero_factura}</td>
-                        <td>${f[4]}</td>
-                        <td>{f[5]}</td>
-                        <td>{f[6]}</td>
+                        <td>${total}</td>
+                        <td>{cae}</td>
+                        <td>{estado_factura}</td>
+
                         <td>
-                            <a href="/consultar/{numero_factura}" target="_blank">
+                            <a
+                                href="/consultar/{numero_factura}"
+                                target="_blank"
+                            >
                                 Ver en ARCA
                             </a>
                         </td>
@@ -354,14 +645,34 @@ def dashboard():
                     </tr>
     """
 
-    for e in eventos:
-        clase = "tipo-error" if e[1] == "ERROR" else "tipo-info"
+    for evento in eventos:
+        fecha = escape(
+            str(evento[0])
+        )
+
+        tipo = escape(
+            str(evento[1])
+        )
+
+        mensaje = escape(
+            str(evento[2])
+        )
+
+        clase = (
+            "tipo-error"
+            if evento[1] == "ERROR"
+            else "tipo-info"
+        )
 
         html += f"""
                     <tr>
-                        <td>{e[0]}</td>
-                        <td class="{clase}">{e[1]}</td>
-                        <td>{e[2]}</td>
+                        <td>{fecha}</td>
+
+                        <td class="{clase}">
+                            {tipo}
+                        </td>
+
+                        <td>{mensaje}</td>
                     </tr>
         """
 
@@ -382,129 +693,369 @@ def dashboard():
 # =====================================================
 
 @app.post("/procesar")
-def procesar(archivo_csv: str = Form(...)):
-
+def procesar(
+    archivo_csv: str = Form(...),
+):
     if not archivo_csv:
-        mensaje = "No se seleccionó ningún archivo CSV."
-        guardar_ultimo_proceso(mensaje)
-        registrar_evento("ERROR", mensaje)
-        return RedirectResponse("/", status_code=303)
+        mensaje = (
+            "No se seleccionó ningún archivo CSV."
+        )
 
-    registrar_evento("INFO", f"Procesamiento iniciado desde Dashboard: {archivo_csv}")
+        guardar_ultimo_proceso(
+            mensaje
+        )
+
+        registrar_evento(
+            "ERROR",
+            mensaje,
+        )
+
+        logger.warning(mensaje)
+
+        return RedirectResponse(
+            "/",
+            status_code=303,
+        )
 
     try:
-        ruta = Path(archivo_csv)
+        ruta = Path(
+            archivo_csv
+        ).resolve()
+
+        carpeta_ventas_resuelta = (
+            CARPETA_VENTAS.resolve()
+        )
+
+        try:
+            ruta.relative_to(
+                carpeta_ventas_resuelta
+            )
+
+        except ValueError:
+            mensaje = (
+                "El archivo seleccionado no pertenece "
+                "a la carpeta de ventas."
+            )
+
+            guardar_ultimo_proceso(
+                mensaje
+            )
+
+            registrar_evento(
+                "ERROR",
+                mensaje,
+            )
+
+            logger.warning(mensaje)
+
+            return RedirectResponse(
+                "/",
+                status_code=303,
+            )
 
         if not ruta.exists():
-            mensaje = f"El archivo seleccionado no existe: {archivo_csv}"
-            guardar_ultimo_proceso(mensaje)
-            registrar_evento("ERROR", mensaje)
-            return RedirectResponse("/", status_code=303)
+            mensaje = (
+                "El archivo seleccionado no existe: "
+                f"{archivo_csv}"
+            )
 
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
+            guardar_ultimo_proceso(
+                mensaje
+            )
+
+            registrar_evento(
+                "ERROR",
+                mensaje,
+            )
+
+            logger.warning(mensaje)
+
+            return RedirectResponse(
+                "/",
+                status_code=303,
+            )
+
+        if ruta.suffix.lower() != ".csv":
+            mensaje = (
+                "El archivo seleccionado debe tener "
+                "extensión .csv."
+            )
+
+            guardar_ultimo_proceso(
+                mensaje
+            )
+
+            registrar_evento(
+                "ERROR",
+                mensaje,
+            )
+
+            logger.warning(mensaje)
+
+            return RedirectResponse(
+                "/",
+                status_code=303,
+            )
+
+        registrar_evento(
+            "INFO",
+            (
+                "Procesamiento iniciado "
+                "desde Dashboard: "
+                f"{archivo_csv}"
+            ),
+        )
+
+        logger.info(
+            (
+                "Procesamiento iniciado "
+                "desde Dashboard: %s"
+            ),
+            archivo_csv,
+        )
+
+        entorno = os.environ.copy()
+        entorno["PYTHONIOENCODING"] = "utf-8"
 
         resultado = subprocess.run(
-            [sys.executable, "procesar_lote.py", archivo_csv],
+            [
+                sys.executable,
+                "procesar_lote.py",
+                str(ruta),
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=env
+            env=entorno,
+            check=False,
         )
 
-        salida = ""
-        salida += "========== STDOUT ==========\n"
-        salida += resultado.stdout or ""
+        salida = (
+            "========== STDOUT ==========\n"
+            f"{resultado.stdout or ''}"
+            "\n\n========== STDERR ==========\n"
+            f"{resultado.stderr or ''}"
+            "\n\n========== CÓDIGO DE SALIDA: "
+            f"{resultado.returncode} ==========\n"
+        )
 
-        salida += "\n\n========== STDERR ==========\n"
-        salida += resultado.stderr or ""
-
-        salida += f"\n\n========== CÓDIGO DE SALIDA: {resultado.returncode} ==========\n"
-
-        guardar_ultimo_proceso(salida)
+        guardar_ultimo_proceso(
+            salida
+        )
 
         if resultado.returncode == 0:
-            registrar_evento("INFO", f"Proceso finalizado correctamente: {archivo_csv}")
+            registrar_evento(
+                "INFO",
+                (
+                    "Proceso finalizado correctamente: "
+                    f"{archivo_csv}"
+                ),
+            )
+
+            logger.info(
+                "Proceso finalizado correctamente: %s",
+                archivo_csv,
+            )
+
         else:
-            registrar_evento("ERROR", f"El proceso terminó con error: {archivo_csv}")
+            registrar_evento(
+                "ERROR",
+                (
+                    "El proceso terminó con error: "
+                    f"{archivo_csv}"
+                ),
+            )
 
-    except Exception as e:
-        mensaje = f"Error ejecutando procesar_lote.py: {str(e)}"
-        guardar_ultimo_proceso(mensaje)
-        registrar_evento("ERROR", mensaje)
+            logger.error(
+                (
+                    "El procesamiento terminó "
+                    "con código %s: %s"
+                ),
+                resultado.returncode,
+                archivo_csv,
+            )
 
-    return RedirectResponse("/", status_code=303)
+    except Exception as error:
+        mensaje = (
+            "Error ejecutando procesar_lote.py."
+        )
+
+        guardar_ultimo_proceso(
+            mensaje
+        )
+
+        registrar_evento(
+            "ERROR",
+            mensaje,
+        )
+
+        logger.exception(
+            (
+                "Error ejecutando "
+                "procesar_lote.py: %s"
+            ),
+            error,
+        )
+
+    return RedirectResponse(
+        "/",
+        status_code=303,
+    )
 
 
 # =====================================================
-# WEBHOOK QUE RECIBE LAS ÓRDENES Y FACTURA EN ARCA
+# WEBHOOK DE FACTURACIÓN
 # =====================================================
 
 @app.post("/webhook-empretienda")
-def recibir_venta(datos_venta: dict):
-
+def recibir_venta(
+    datos_venta: dict,
+):
     try:
-        id_orden = datos_venta["id_orden"]
-        cliente = datos_venta["cliente"]["nombre"]
-        total = datos_venta["total"]
+        id_orden = int(
+            datos_venta["id_orden"]
+        )
 
-        factura_existente = existe_orden_facturada(id_orden)
+        cliente = str(
+            datos_venta["cliente"]["nombre"]
+        )
+
+        total = round(
+            float(datos_venta["total"]),
+            2,
+        )
+
+        factura_existente = (
+            existe_orden_facturada(
+                id_orden
+            )
+        )
 
         if factura_existente:
-            numero_factura_existente = factura_existente[1]
-            cae_existente = factura_existente[2]
+            numero_factura_existente = (
+                factura_existente[1]
+            )
+
+            cae_existente = (
+                factura_existente[2]
+            )
 
             registrar_evento(
                 "INFO",
-                f"Orden {id_orden} omitida: ya facturada como factura {numero_factura_existente}"
+                (
+                    f"Orden {id_orden} omitida: "
+                    "ya fue facturada como comprobante "
+                    f"{numero_factura_existente}"
+                ),
+            )
+
+            logger.info(
+                (
+                    "Orden %s omitida porque ya "
+                    "fue facturada como %s"
+                ),
+                id_orden,
+                numero_factura_existente,
             )
 
             return {
                 "status": "duplicada",
-                "mensaje": "La orden ya fue facturada anteriormente",
+                "mensaje": (
+                    "La orden ya fue facturada "
+                    "anteriormente"
+                ),
                 "orden": id_orden,
-                "factura": numero_factura_existente,
-                "CAE": cae_existente
+                "factura": (
+                    numero_factura_existente
+                ),
+                "CAE": cae_existente,
             }
 
         registrar_evento(
             "INFO",
-            f"Orden {id_orden} recibida - {cliente} - ${total}"
+            (
+                f"Orden {id_orden} recibida - "
+                f"{cliente} - ${total:.2f}"
+            ),
         )
 
-        tipo_comprobante = 11
-        punto_venta = 1
-
-        ultimo_numero = afip.ElectronicBilling.getLastVoucher(
-            punto_venta,
-            tipo_comprobante
+        logger.info(
+            (
+                "Orden %s recibida - "
+                "%s - $%.2f"
+            ),
+            id_orden,
+            cliente,
+            total,
         )
 
-        numero_nueva_factura = ultimo_numero + 1
-        fecha_actual = datetime.datetime.now().strftime("%Y%m%d")
+        ultimo_numero = (
+            afip
+            .ElectronicBilling
+            .getLastVoucher(
+                PUNTO_VENTA,
+                TIPO_COMPROBANTE,
+            )
+        )
 
-        tipo_doc_cliente = datos_venta["cliente"]["tipo_doc"]
+        numero_nueva_factura = (
+            ultimo_numero + 1
+        )
+
+        fecha_actual = (
+            datetime.datetime.now()
+            .strftime("%Y%m%d")
+        )
+
+        tipo_doc_cliente = str(
+            datos_venta
+            .get("cliente", {})
+            .get("tipo_doc", "")
+        ).strip().upper()
 
         if tipo_doc_cliente == "DNI":
             doc_tipo_afip = 96
+
         elif tipo_doc_cliente == "CUIT":
             doc_tipo_afip = 80
+
         else:
             doc_tipo_afip = 99
 
-        dni_cuit = datos_venta["cliente"]["dni_cuit"]
+        dni_cuit = str(
+            datos_venta
+            .get("cliente", {})
+            .get("dni_cuit", "")
+        ).strip()
 
-        if dni_cuit and dni_cuit.isdigit():
-            doc_nro = int(dni_cuit)
+        documento_limpio = (
+            dni_cuit
+            .replace(".", "")
+            .replace("-", "")
+            .replace(" ", "")
+        )
+
+        if documento_limpio.isdigit():
+            doc_nro = int(
+                documento_limpio
+            )
+
         else:
             doc_nro = 0
             doc_tipo_afip = 99
 
+        condicion_iva_receptor = int(
+            datos_venta.get(
+                "CondicionIVAReceptorId",
+                5,
+            )
+        )
+
         data_afip = {
             "CantReg": 1,
-            "PtoVta": punto_venta,
-            "CbteTipo": tipo_comprobante,
+            "PtoVta": PUNTO_VENTA,
+            "CbteTipo": TIPO_COMPROBANTE,
             "Concepto": 1,
             "DocTipo": doc_tipo_afip,
             "DocNro": doc_nro,
@@ -519,20 +1070,27 @@ def recibir_venta(datos_venta: dict):
             "ImpIVA": 0,
             "MonId": "PES",
             "MonCotiz": 1,
-            "CondicionIVAReceptorId": datos_venta.get(
-                "CondicionIVAReceptorId",
-                5
-            )
+            "CondicionIVAReceptorId": (
+                condicion_iva_receptor
+            ),
         }
 
-        resultado = crear_voucher_con_reintentos(
-            data_afip=data_afip,
-            id_orden=id_orden,
-            numero_factura=numero_nueva_factura,
-            intentos=4
+        resultado = (
+            crear_voucher_con_reintentos(
+                data_afip=data_afip,
+                id_orden=id_orden,
+                numero_factura=(
+                    numero_nueva_factura
+                ),
+            )
         )
 
         cae = resultado.get("CAE")
+
+        if not cae:
+            raise RuntimeError(
+                "ARCA no devolvió un CAE válido."
+            )
 
         vencimiento = (
             resultado.get("CAEFchVto")
@@ -544,16 +1102,31 @@ def recibir_venta(datos_venta: dict):
         guardar_factura(
             orden=id_orden,
             cliente=cliente,
-            numero_factura=numero_nueva_factura,
+            numero_factura=(
+                numero_nueva_factura
+            ),
             total=total,
             cae=cae,
             vencimiento=vencimiento,
-            estado="Emitida"
+            estado="Emitida",
         )
 
         registrar_evento(
             "INFO",
-            f"Factura {numero_nueva_factura} emitida correctamente - Orden {id_orden}"
+            (
+                f"Factura {numero_nueva_factura} "
+                "emitida correctamente - "
+                f"Orden {id_orden}"
+            ),
+        )
+
+        logger.info(
+            (
+                "Factura %s emitida correctamente "
+                "para la orden %s"
+            ),
+            numero_nueva_factura,
+            id_orden,
         )
 
         return {
@@ -562,85 +1135,199 @@ def recibir_venta(datos_venta: dict):
             "factura": numero_nueva_factura,
             "CAE": cae,
             "Vencimiento": vencimiento,
-            "respuesta_completa": resultado
+            "respuesta_completa": resultado,
         }
 
-    except Exception as e:
+    except HTTPException:
+        raise
 
-        id_orden_error = datos_venta.get("id_orden", 0)
-        cliente_error = datos_venta.get("cliente", {}).get("nombre", "Sin cliente")
-        total_error = datos_venta.get("total", 0)
+    except Exception as error:
+        id_orden_error = datos_venta.get(
+            "id_orden",
+            0,
+        )
+
+        cliente_error = (
+            datos_venta
+            .get("cliente", {})
+            .get(
+                "nombre",
+                "Sin cliente",
+            )
+        )
+
+        total_error = datos_venta.get(
+            "total",
+            0,
+        )
 
         registrar_evento(
             "ERROR",
-            f"Error orden {id_orden_error}: {str(e)}"
+            (
+                f"Error orden {id_orden_error}: "
+                f"{error}"
+            ),
         )
 
         registrar_error_facturacion(
             orden=id_orden_error,
             cliente=cliente_error,
             total=total_error,
-            error=str(e),
-            payload=datos_venta
+            error=str(error),
+            payload=datos_venta,
+        )
+
+        logger.exception(
+            (
+                "Error facturando la orden %s"
+            ),
+            id_orden_error,
         )
 
         raise HTTPException(
             status_code=500,
-            detail=f"Error devuelto por ARCA: {str(e)}"
-        )
+            detail=(
+                "No se pudo completar la facturación. "
+                "El error fue registrado."
+            ),
+        ) from error
 
 
 # =====================================================
 # REPROCESAR PENDIENTES
 # =====================================================
 
-@app.post("/reprocesar-pendiente/{id_error}")
-def reprocesar_pendiente(id_error: int):
-
-    error_guardado = obtener_error_facturacion(id_error)
+@app.post(
+    "/reprocesar-pendiente/{id_error}"
+)
+def reprocesar_pendiente(
+    id_error: int,
+):
+    error_guardado = (
+        obtener_error_facturacion(
+            id_error
+        )
+    )
 
     if not error_guardado:
         registrar_evento(
             "ERROR",
-            f"No se encontró pendiente con ID {id_error}"
+            (
+                "No se encontró pendiente "
+                f"con ID {id_error}"
+            ),
         )
 
-        return RedirectResponse("/db/errores", status_code=303)
+        logger.warning(
+            (
+                "No se encontró pendiente "
+                "con ID %s"
+            ),
+            id_error,
+        )
 
-    if error_guardado["estado"] != "pendiente":
+        return RedirectResponse(
+            "/db/errores",
+            status_code=303,
+        )
+
+    if (
+        error_guardado["estado"]
+        != "pendiente"
+    ):
         registrar_evento(
             "INFO",
-            f"Pendiente {id_error} ya no está pendiente"
+            (
+                f"El registro {id_error} "
+                "ya no se encuentra pendiente"
+            ),
         )
 
-        return RedirectResponse("/db/errores", status_code=303)
+        logger.info(
+            (
+                "El registro %s ya no "
+                "se encuentra pendiente"
+            ),
+            id_error,
+        )
+
+        return RedirectResponse(
+            "/db/errores",
+            status_code=303,
+        )
 
     payload = error_guardado["payload"]
     orden = error_guardado["orden"]
 
     registrar_evento(
         "INFO",
-        f"Reprocesando pendiente ID {id_error} - Orden {orden}"
+        (
+            f"Reprocesando pendiente "
+            f"ID {id_error} - "
+            f"Orden {orden}"
+        ),
+    )
+
+    logger.info(
+        (
+            "Reprocesando pendiente "
+            "ID %s - Orden %s"
+        ),
+        id_error,
+        orden,
     )
 
     try:
-        resultado = recibir_venta(payload)
+        resultado = recibir_venta(
+            payload
+        )
 
-        if resultado.get("status") in ["success", "duplicada"]:
-            marcar_error_resuelto(id_error)
+        if resultado.get("status") in {
+            "success",
+            "duplicada",
+        }:
+            marcar_error_resuelto(
+                id_error
+            )
 
             registrar_evento(
                 "INFO",
-                f"Pendiente ID {id_error} resuelto correctamente"
+                (
+                    f"Pendiente ID {id_error} "
+                    "resuelto correctamente"
+                ),
             )
 
-    except Exception as e:
+            logger.info(
+                (
+                    "Pendiente ID %s "
+                    "resuelto correctamente"
+                ),
+                id_error,
+            )
+
+    except Exception as error:
         registrar_evento(
             "ERROR",
-            f"Falló reproceso pendiente ID {id_error}: {str(e)}"
+            (
+                "Falló el reproceso del pendiente "
+                f"ID {id_error}"
+            ),
         )
 
-    return RedirectResponse("/db/errores", status_code=303)
+        logger.exception(
+            (
+                "Falló el reproceso del "
+                "pendiente ID %s: %s"
+            ),
+            id_error,
+            error,
+        )
+
+    return RedirectResponse(
+        "/db/errores",
+        status_code=303,
+    )
 
 
 # =====================================================
@@ -648,67 +1335,115 @@ def reprocesar_pendiente(id_error: int):
 # =====================================================
 
 @app.get("/consultar/{numero_factura}")
-def consultar_factura(numero_factura: int):
-
+def consultar_factura(
+    numero_factura: int,
+):
     try:
-        punto_venta = 1
-        tipo_comprobante = 11
-
         registrar_evento(
             "INFO",
-            f"Consultando factura {numero_factura} en ARCA"
+            (
+                "Consultando factura "
+                f"{numero_factura} en ARCA"
+            ),
         )
 
-        resultado = afip.ElectronicBilling.getVoucherInfo(
+        logger.info(
+            (
+                "Consultando factura "
+                "%s en ARCA"
+            ),
             numero_factura,
-            punto_venta,
-            tipo_comprobante
+        )
+
+        resultado = (
+            afip
+            .ElectronicBilling
+            .getVoucherInfo(
+                numero_factura,
+                PUNTO_VENTA,
+                TIPO_COMPROBANTE,
+            )
         )
 
         if not resultado:
             registrar_evento(
                 "ERROR",
-                f"Factura {numero_factura} no encontrada en ARCA"
+                (
+                    f"Factura {numero_factura} "
+                    "no encontrada en ARCA"
+                ),
+            )
+
+            logger.warning(
+                (
+                    "Factura %s no encontrada "
+                    "en ARCA"
+                ),
+                numero_factura,
             )
 
             return {
                 "status": "no_encontrada",
-                "mensaje": f"No se encontró la factura {numero_factura} en ARCA"
+                "mensaje": (
+                    "No se encontró la factura "
+                    f"{numero_factura} en ARCA"
+                ),
             }
 
         registrar_evento(
             "INFO",
-            f"Factura {numero_factura} encontrada en ARCA"
+            (
+                f"Factura {numero_factura} "
+                "encontrada en ARCA"
+            ),
         )
 
         return {
             "status": "encontrada",
             "factura": numero_factura,
-            "punto_venta": punto_venta,
-            "tipo_comprobante": tipo_comprobante,
-            "datos_arca": resultado
+            "punto_venta": PUNTO_VENTA,
+            "tipo_comprobante": (
+                TIPO_COMPROBANTE
+            ),
+            "datos_arca": resultado,
         }
 
-    except Exception as e:
-
+    except Exception as error:
         registrar_evento(
             "ERROR",
-            f"Error consultando factura {numero_factura}: {str(e)}"
+            (
+                "Error consultando factura "
+                f"{numero_factura}"
+            ),
+        )
+
+        logger.exception(
+            (
+                "Error consultando factura "
+                "%s en ARCA: %s"
+            ),
+            numero_factura,
+            error,
         )
 
         raise HTTPException(
             status_code=500,
-            detail=f"Error consultando factura en ARCA: {str(e)}"
-        )
+            detail=(
+                "No se pudo consultar la factura "
+                "en ARCA. El error fue registrado."
+            ),
+        ) from error
 
 
 # =====================================================
 # VISUALIZAR SQLITE - FACTURAS
 # =====================================================
 
-@app.get("/db/facturas", response_class=HTMLResponse)
+@app.get(
+    "/db/facturas",
+    response_class=HTMLResponse,
+)
 def ver_facturas_db():
-
     facturas = ultimas_facturas(100)
 
     html = f"""
@@ -718,53 +1453,57 @@ def ver_facturas_db():
     {head_html("Base SQLite - Facturas")}
 
     <body>
+        <div class="contenedor">
+            <div class="card">
+                <h1>🧾 Facturas guardadas en SQLite</h1>
 
-    <div class="contenedor">
-    <div class="card">
-        <h1>🧾 Facturas guardadas en SQLite</h1>
+                <p>
+                    <a href="/">
+                        ← Volver al Dashboard
+                    </a>
+                </p>
 
-        <p>
-            <a href="/">← Volver al Dashboard</a>
-        </p>
-
-        <table>
-            <tr>
-                <th>Fecha</th>
-                <th>Orden</th>
-                <th>Cliente</th>
-                <th>Factura</th>
-                <th>Total</th>
-                <th>CAE</th>
-                <th>Estado</th>
-                <th>ARCA</th>
-            </tr>
+                <table>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Orden</th>
+                        <th>Cliente</th>
+                        <th>Factura</th>
+                        <th>Total</th>
+                        <th>CAE</th>
+                        <th>Estado</th>
+                        <th>ARCA</th>
+                    </tr>
     """
 
-    for f in facturas:
-        numero_factura = f[3]
+    for factura in facturas:
+        numero_factura = factura[3]
 
         html += f"""
-            <tr>
-                <td>{f[0]}</td>
-                <td>{f[1]}</td>
-                <td>{f[2]}</td>
-                <td>{numero_factura}</td>
-                <td>${f[4]}</td>
-                <td>{f[5]}</td>
-                <td>{f[6]}</td>
-                <td>
-                    <a href="/consultar/{numero_factura}" target="_blank">
-                        Consultar
-                    </a>
-                </td>
-            </tr>
+                    <tr>
+                        <td>{escape(str(factura[0]))}</td>
+                        <td>{escape(str(factura[1]))}</td>
+                        <td>{escape(str(factura[2]))}</td>
+                        <td>{numero_factura}</td>
+                        <td>${escape(str(factura[4]))}</td>
+                        <td>{escape(str(factura[5]))}</td>
+                        <td>{escape(str(factura[6]))}</td>
+
+                        <td>
+                            <a
+                                href="/consultar/{numero_factura}"
+                                target="_blank"
+                            >
+                                Consultar
+                            </a>
+                        </td>
+                    </tr>
         """
 
     html += """
-        </table>
-    </div>
-    </div>
-
+                </table>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -776,9 +1515,11 @@ def ver_facturas_db():
 # VISUALIZAR SQLITE - EVENTOS
 # =====================================================
 
-@app.get("/db/eventos", response_class=HTMLResponse)
+@app.get(
+    "/db/eventos",
+    response_class=HTMLResponse,
+)
 def ver_eventos_db():
-
     eventos = ultimos_eventos(100)
 
     html = f"""
@@ -788,39 +1529,49 @@ def ver_eventos_db():
     {head_html("Base SQLite - Eventos")}
 
     <body>
+        <div class="contenedor">
+            <div class="card">
+                <h1>📄 Eventos guardados en SQLite</h1>
 
-    <div class="contenedor">
-    <div class="card">
-        <h1>📄 Eventos guardados en SQLite</h1>
+                <p>
+                    <a href="/">
+                        ← Volver al Dashboard
+                    </a>
+                </p>
 
-        <p>
-            <a href="/">← Volver al Dashboard</a>
-        </p>
-
-        <table>
-            <tr>
-                <th>Fecha</th>
-                <th>Tipo</th>
-                <th>Mensaje</th>
-            </tr>
+                <table>
+                    <tr>
+                        <th>Fecha</th>
+                        <th>Tipo</th>
+                        <th>Mensaje</th>
+                    </tr>
     """
 
-    for e in eventos:
-        clase = "tipo-error" if e[1] == "ERROR" else "tipo-info"
+    for evento in eventos:
+        clase = (
+            "tipo-error"
+            if evento[1] == "ERROR"
+            else "tipo-info"
+        )
 
         html += f"""
-            <tr>
-                <td>{e[0]}</td>
-                <td class="{clase}">{e[1]}</td>
-                <td>{e[2]}</td>
-            </tr>
+                    <tr>
+                        <td>{escape(str(evento[0]))}</td>
+
+                        <td class="{clase}">
+                            {escape(str(evento[1]))}
+                        </td>
+
+                        <td>
+                            {escape(str(evento[2]))}
+                        </td>
+                    </tr>
         """
 
     html += """
-        </table>
-    </div>
-    </div>
-
+                </table>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -829,13 +1580,19 @@ def ver_eventos_db():
 
 
 # =====================================================
-# VISUALIZAR SQLITE - ERRORES / PENDIENTES
+# VISUALIZAR SQLITE - ERRORES
 # =====================================================
 
-@app.get("/db/errores", response_class=HTMLResponse)
+@app.get(
+    "/db/errores",
+    response_class=HTMLResponse,
+)
 def ver_errores_facturacion():
-
-    errores = ultimos_errores_facturacion(100)
+    errores = (
+        ultimos_errores_facturacion(
+            100
+        )
+    )
 
     html = f"""
     <!DOCTYPE html>
@@ -844,63 +1601,82 @@ def ver_errores_facturacion():
     {head_html("Errores de Facturación")}
 
     <body>
+        <div class="contenedor">
+            <div class="card">
+                <h1>
+                    ⚠️ Errores y pendientes de facturación
+                </h1>
 
-    <div class="contenedor">
-    <div class="card">
-        <h1>⚠️ Errores / pendientes de facturación</h1>
+                <p>
+                    <a href="/">
+                        ← Volver al Dashboard
+                    </a>
+                </p>
 
-        <p>
-            <a href="/">← Volver al Dashboard</a>
-        </p>
-
-        <table>
-            <tr>
-                <th>ID</th>
-                <th>Fecha</th>
-                <th>Orden</th>
-                <th>Cliente</th>
-                <th>Total</th>
-                <th>Error</th>
-                <th>Estado</th>
-                <th>Acción</th>
-            </tr>
+                <table>
+                    <tr>
+                        <th>ID</th>
+                        <th>Fecha</th>
+                        <th>Orden</th>
+                        <th>Cliente</th>
+                        <th>Total</th>
+                        <th>Error</th>
+                        <th>Estado</th>
+                        <th>Acción</th>
+                    </tr>
     """
 
-    for e in errores:
-        id_error = e[0]
-        estado = e[6]
+    for error in errores:
+        id_error = error[0]
+        estado_error = str(error[6])
 
-        if estado == "pendiente":
+        if estado_error == "pendiente":
             accion = f"""
-                <form action="/reprocesar-pendiente/{id_error}" method="post">
-                    <button class="boton-mini" type="submit">
+                <form
+                    action="/reprocesar-pendiente/{id_error}"
+                    method="post"
+                >
+                    <button
+                        class="boton-mini"
+                        type="submit"
+                    >
                         Reprocesar
                     </button>
                 </form>
             """
+
+            clase_estado = (
+                "estado-pendiente"
+            )
+
         else:
             accion = "Resuelto"
 
-        clase_estado = "estado-pendiente" if estado == "pendiente" else "estado-resuelto"
+            clase_estado = (
+                "estado-resuelto"
+            )
 
         html += f"""
-            <tr>
-                <td>{e[0]}</td>
-                <td>{e[1]}</td>
-                <td>{e[2]}</td>
-                <td>{e[3]}</td>
-                <td>${e[4]}</td>
-                <td>{e[5]}</td>
-                <td class="{clase_estado}">{estado}</td>
-                <td>{accion}</td>
-            </tr>
+                    <tr>
+                        <td>{id_error}</td>
+                        <td>{escape(str(error[1]))}</td>
+                        <td>{escape(str(error[2]))}</td>
+                        <td>{escape(str(error[3]))}</td>
+                        <td>${escape(str(error[4]))}</td>
+                        <td>{escape(str(error[5]))}</td>
+
+                        <td class="{clase_estado}">
+                            {escape(estado_error)}
+                        </td>
+
+                        <td>{accion}</td>
+                    </tr>
         """
 
     html += """
-        </table>
-    </div>
-    </div>
-
+                </table>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -909,18 +1685,30 @@ def ver_errores_facturacion():
 
 
 # =====================================================
-# ESTADO SIMPLE DEL SISTEMA
+# ESTADO DEL SISTEMA
 # =====================================================
 
 @app.get("/estado")
 def estado():
-
     return {
+        "aplicacion": APP_NAME,
         "servidor": "online",
         "sqlite": "ok",
+        "modo_arca": (
+            "produccion"
+            if AFIP_PRODUCTION
+            else "homologacion"
+        ),
         "facturas": contar_facturas(),
         "errores": contar_errores(),
         "pendientes": contar_pendientes(),
         "ultima_factura": ultima_factura(),
-        "csv_disponibles": listar_csv_ventas()
+        "punto_venta": PUNTO_VENTA,
+        "tipo_comprobante": TIPO_COMPROBANTE,
+        "carpeta_ventas": str(
+            CARPETA_VENTAS
+        ),
+        "csv_disponibles": (
+            listar_csv_ventas()
+        ),
     }
