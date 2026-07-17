@@ -44,6 +44,10 @@ def obtener_entero(
         ) from error
 
 
+# =====================================================
+# CONFIGURACIÓN GENERAL
+# =====================================================
+
 APP_NAME = os.getenv(
     "APP_NAME",
     "Chuli-Facturador",
@@ -68,6 +72,11 @@ APP_PORT = obtener_entero(
     "APP_PORT",
     8000,
 )
+
+
+# =====================================================
+# CONFIGURACIÓN ARCA / AFIP
+# =====================================================
 
 CUIT = os.getenv("CUIT")
 
@@ -104,6 +113,11 @@ TIPO_COMPROBANTE = obtener_entero(
     11,
 )
 
+
+# =====================================================
+# BASE DE DATOS Y ARCHIVOS
+# =====================================================
+
 DATABASE_PATH = Path(
     os.getenv(
         "DATABASE_PATH",
@@ -118,19 +132,17 @@ VENTAS_PATH = Path(
     )
 )
 
-LOG_PATH = Path(
-    os.getenv(
-        "LOG_PATH",
-        "logs",
-    )
-)
-
 ULTIMO_PROCESO_PATH = Path(
     os.getenv(
         "ULTIMO_PROCESO_PATH",
         "logs/ultimo_proceso.txt",
     )
 )
+
+
+# =====================================================
+# REINTENTOS ARCA
+# =====================================================
 
 ARCA_MAX_REINTENTOS = obtener_entero(
     "ARCA_MAX_REINTENTOS",
@@ -156,6 +168,18 @@ ARCA_ESPERAS = [
     ),
 ]
 
+
+# =====================================================
+# LOGS
+# =====================================================
+
+LOG_PATH = Path(
+    os.getenv(
+        "LOG_PATH",
+        "logs",
+    )
+)
+
 LOG_LEVEL = os.getenv(
     "LOG_LEVEL",
     "INFO",
@@ -171,6 +195,27 @@ LOG_BACKUP_COUNT = obtener_entero(
     5,
 )
 
+
+# =====================================================
+# BACKUPS SQLITE
+# =====================================================
+
+BACKUP_PATH = Path(
+    os.getenv(
+        "BACKUP_PATH",
+        "backups",
+    )
+)
+
+BACKUP_KEEP_COUNT = obtener_entero(
+    "BACKUP_KEEP_COUNT",
+    10,
+)
+
+
+# =====================================================
+# VALIDACIÓN
+# =====================================================
 
 def validar_configuracion() -> None:
     errores = []
@@ -198,6 +243,26 @@ def validar_configuracion() -> None:
     if not AFIP_KEY_PATH.exists():
         errores.append(
             f"No se encontró la clave privada: {AFIP_KEY_PATH}"
+        )
+
+    if ARCA_MAX_REINTENTOS < 1:
+        errores.append(
+            "ARCA_MAX_REINTENTOS debe ser igual o mayor a 1"
+        )
+
+    if LOG_MAX_BYTES < 1:
+        errores.append(
+            "LOG_MAX_BYTES debe ser igual o mayor a 1"
+        )
+
+    if LOG_BACKUP_COUNT < 0:
+        errores.append(
+            "LOG_BACKUP_COUNT no puede ser negativo"
+        )
+
+    if BACKUP_KEEP_COUNT < 1:
+        errores.append(
+            "BACKUP_KEEP_COUNT debe ser igual o mayor a 1"
         )
 
     if errores:
